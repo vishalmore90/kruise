@@ -420,11 +420,29 @@ func (dsc *ReconcileDaemonSet) syncDaemonSet(ctx context.Context, request reconc
 					klog.ErrorS(err, "Failed to GetScaledValueFromIntOrPercent of minUpdatedReadyPods for DaemonSet", "daemonSet", request)
 				}
 			}
-			// todo: check whether the updatedReadyPodsCount greater than minUpdatedReadyPodsCount
-			_ = minUpdatedReadyPodsCount
-			// pre-download images for new revision
-			if err := dsc.createImagePullJobsForInPlaceUpdate(ds, old, cur); err != nil {
-				klog.ErrorS(err, "Failed to create ImagePullJobs for DaemonSet", "daemonSet", request)
+			updatedReadyPodsCount := 0
+			if nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ctx, ds); err == nil {
+				generation, _ := GetTemplateGeneration(ds)
+				for _, node := range nodeList {
+					daemonPods := nodeToDaemonPods[node.Name]
+					if len(daemonPods) == 0 {
+						continue
+					}
+					sort.Sort(podByCreationTimestampAndPhase(daemonPods))
+					pod := daemonPods[0]
+					if util.IsPodUpdated(pod, hash, generation) && podutil.IsPodReady(pod) {
+						updatedReadyPodsCount++
+					}
+				}
+			} else {
+				klog.ErrorS(err, "Failed to get node to daemon pod mapping for DaemonSet", "daemonSet", request)
+			}
+
+			if updatedReadyPodsCount >= minUpdatedReadyPodsCount {
+				// pre-download images for new revision
+				if err := dsc.createImagePullJobsForInPlaceUpdate(ds, old, cur); err != nil {
+					klog.ErrorS(err, "Failed to create ImagePullJobs for DaemonSet", "daemonSet", request)
+				}
 			}
 		} else {
 			// delete ImagePullJobs if revisions have been consistent
